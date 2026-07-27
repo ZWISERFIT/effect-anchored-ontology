@@ -123,10 +123,11 @@ class MemoryAnchor:
         serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
         content_hash = hashlib.sha256(serialized.encode()).hexdigest()[:16]
 
+        from datetime import datetime, timezone as _tz
         self._anchors[key] = {
             "value": value,
             "hash": content_hash,
-            "updated": None,  # inject timestamp at call site
+            "updated": datetime.now(_tz.utc).isoformat(),  # P1#6 FIX: set utcnow
             "source": source,
         }
 
@@ -146,7 +147,12 @@ class MemoryAnchor:
         current = self._anchors[key]
         serialized = json.dumps(current["value"], ensure_ascii=False, sort_keys=True)
         recomputed = hashlib.sha256(serialized.encode()).hexdigest()[:16]
-        return recomputed == current["hash"]
+        # Anchors loaded from file may not have 'hash' key
+        # If hash is missing, treat as unverified (can't check integrity)
+        stored_hash = current.get("hash") or current.get("content_hash")
+        if stored_hash is None:
+            return None  # can't verify without stored hash
+        return recomputed == stored_hash
 
     def keys(self) -> List[str]:
         """List all anchor keys."""

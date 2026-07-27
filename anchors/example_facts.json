@@ -1,8 +1,79 @@
 {
   "anchors": {
     "knee_pain": {
+      "aliases": [
+        "膝盖痛",
+        "膝盖疼",
+        "膝关节疼痛",
+        "膝盖不舒服",
+        "knee hurt",
+        "knee hurts",
+        "my knee"
+      ],
       "value": {
-        "forbidden_suggestions": ["squat", "leg_press", "lunge", "deadlift"],
+        "forbidden_suggestions": [
+          "squat",
+          "leg_press",
+          "lunge",
+          "deadlift",
+          "深蹲",
+          "腿举",
+          "弓步",
+          "硬拉"
+        ],
+        "required_routing": "human_trainer",
+        "reason": "Medical symptom → no AI exercise advice → human only"
+      }
+    },
+    "back_pain": {
+      "aliases": [
+        "背痛",
+        "腰疼",
+        "腰痛",
+        "背部疼痛",
+        "后背不舒服",
+        "下背痛",
+        "back hurt",
+        "back hurts",
+        "my back",
+        "back pain",
+        "lower back pain"
+      ],
+      "value": {
+        "forbidden_suggestions": [
+          "deadlift",
+          "barbell_row",
+          "good_morning",
+          "硬拉",
+          "杠铃划船"
+        ],
+        "required_routing": "human_trainer",
+        "reason": "Medical symptom → no AI exercise advice → human only"
+      }
+    },
+    "shoulder_pain": {
+      "aliases": [
+        "肩痛",
+        "肩膀疼",
+        "肩部疼痛",
+        "肩膀不舒服",
+        "肩膀受伤",
+        "肩伤",
+        "shoulder hurt",
+        "shoulder pain"
+      ],
+      "value": {
+        "forbidden_suggestions": [
+          "overhead_press",
+          "lateral_raise",
+          "shoulder_press",
+          "推举",
+          "侧平举",
+          "康复训练",
+          "康复",
+          "恢复训练",
+          "复健"
+        ],
         "required_routing": "human_trainer",
         "reason": "Medical symptom → no AI exercise advice → human only"
       }
