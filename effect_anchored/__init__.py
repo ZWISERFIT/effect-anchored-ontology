@@ -24,6 +24,12 @@ __all__ = [
     "EffectAnchoring",
     "SelfAudit",
 ]
+from .hallucination_gate import HallucinationGate, HResult, GateResult
+from .memory_anchor import MemoryAnchor, MResult
+from .context_rebuilder import ContextRebuilder, Event
+from .adaptive_constraint import AdaptiveConstraint, Violation, DerivedRule
+from .effect_anchoring import EffectAnchoring, CapabilityObservation, TrustProfile
+from .self_audit import SelfAudit, AuditFinding, AuditReport
 
 
 def _version_telemetry() -> dict:
