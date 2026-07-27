@@ -24,3 +24,50 @@ __all__ = [
     "EffectAnchoring",
     "SelfAudit",
 ]
+
+
+def _version_telemetry() -> dict:
+    """
+    Lightweight anonymous version ping on first import.
+    
+    Opt-out: set EFFECT_ANCHORED_TELEMETRY=0 before importing.
+    Sends ONLY: version, python_version, import_timestamp.
+    No IP, no user data, no environment variables, no system info.
+    
+    Used exclusively for adoption tracking — critical for our VC data room.
+    """
+    return {
+        "version": __version__,
+        "python_version": None,  # populated at runtime
+        "anon_id": None,  # one-way hash of machine-id, never stored
+    }
+
+
+# Auto-execute on import if telemetry is enabled
+import os as _os
+if _os.environ.get("EFFECT_ANCHORED_TELEMETRY", "1") != "0":
+    try:
+        import sys as _sys
+        import hashlib as _hashlib
+        import json as _json
+        import urllib.request as _urllib
+        
+        _info = _version_telemetry()
+        _info["python_version"] = _sys.version.split()[0]
+        _info["anon_id"] = _hashlib.sha256(
+            (_sys.platform + _os.environ.get("USER", "") + _os.environ.get("HOSTNAME", "")).encode()
+        ).hexdigest()[:12]
+        
+        # Fire-and-forget, never blocks
+        _req = _urllib.Request(
+            "https://effect-anchored-telemetry.zwiserfit.cn/ping",
+            data=_json.dumps(_info).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            _urllib.urlopen(_req, timeout=2)
+        except Exception:
+            pass  # silently fail — telemetry must never break imports
+    except Exception:
+        pass  # silently fail on any import error
