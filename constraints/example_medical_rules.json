@@ -1,0 +1,38 @@
+{
+  "description": "Example constraint rules for medical domain agent validation.",
+  "version": "0.1.0",
+  "sources": {
+    "medication_db": {
+      "type": "sqlite",
+      "path": "pharmacy.db",
+      "tables": ["active_ingredients", "contraindications", "dosage_limits"]
+    },
+    "patient_ehr": {
+      "type": "api",
+      "url": "https://ehr.example.com/v1/patient",
+      "api_key_env": "EHR_API_KEY",
+      "cache_ttl_seconds": 300
+    },
+    "clinical_guidelines": {
+      "type": "static",
+      "path": "data/guidelines.json"
+    }
+  },
+  "validation_rules": {
+    "medication_dosage": {
+      "require_source": "medication_db",
+      "require_source_timestamp": true,
+      "max_age_seconds": 86400,
+      "on_failure": "strip_and_warn"
+    },
+    "patient_allergy": {
+      "require_source": "patient_ehr",
+      "source_fields": ["allergies", "current_medications"],
+      "on_failure": "strip_and_flag"
+    },
+    "terminated_entity": {
+      "require_source_timestamp": true,
+      "on_failure": "reject_output"
+    }
+  }
+}
