@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "effect-anchored-ontology"
+version = "0.1.0-alpha"
+description = "Six deterministic libraries that operate outside the LLM's reasoning space"
+readme = "README.md"
+license = {text = "Apache-2.0"}
+requires-python = ">=3.9"
+authors = [
+    {name = "ZWISERFIT 9-Agent Collective"},
+]
+keywords = [
+    "llm", "agent", "hallucination", "ontology", "palantir",
+    "rag", "memory", "ai-safety", "multi-agent",
+]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+]
+
+[project.urls]
+Homepage = "https://github.com/ZWISERFIT/effect-anchored-ontology"
+Repository = "https://github.com/ZWISERFIT/effect-anchored-ontology"
+Discussions = "https://github.com/ZWISERFIT/ZWISERFIT/discussions"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "jsonschema>=4.0",
+]
+
+[tool.setuptools.packages.find]
+include = ["effect_anchored*"]

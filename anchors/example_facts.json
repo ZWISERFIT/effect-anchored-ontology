@@ -1,0 +1,26 @@
+{
+  "anchors": {
+    "knee_pain": {
+      "value": {
+        "forbidden_suggestions": ["squat", "leg_press", "lunge", "deadlift"],
+        "required_routing": "human_trainer",
+        "reason": "Medical symptom → no AI exercise advice → human only"
+      }
+    },
+    "founder_first_store_location": {
+      "value": "东莞市万江街道"
+    },
+    "founder_store_count": {
+      "value": 1
+    },
+    "founder_years_operating": {
+      "value": 7
+    },
+    "zwf_data_ownership": {
+      "value": "Users own their data via DID — ZWF cannot access it"
+    },
+    "zwf_stance_on_ai_replacing_humans": {
+      "value": "AI handles data + efficiency. Humans deliver warmth + motivation + emotional connection. Users own their data."
+    }
+  }
+}
