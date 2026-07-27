@@ -10,6 +10,23 @@ Architecture Principle:
      without hiding a contract failure." — richardchen874-sys
 
     We validate. We record. We do NOT repair inside the LLM's probability space.
+
+KNOWN TECHNICAL DEBT (Tristan audit 2026-07-27):
+    T1 - Time-window validation: constraints are checked against current rules,
+         but not validated against the ruleset version at output-generation time.
+         Fix: H(output, constraints, epoch_hash) → fail if constraints changed
+         since generation. (→ blocking: 7/25 Gateway crash: constraints changed
+         post-reload, old outputs validated against new rules.)
+    
+    T2 - C-function rebuild verification: ContextRebuilder.reconstruct() needs
+         to be treated as "another LLM output" and pass through H-function.
+         Fix: H(rebuilt_context, C.merkle_root) → verify rebuild integrity.
+    
+    T3 - A-function output validation (MOST CRITICAL): A-function is the ONLY
+         function running inside LLM reasoning space. Rules it generates must
+         pass through H-function before activation. Otherwise: LLM judging LLM.
+         Status: ✅ IMPLEMENTED — A.derive() signature now accepts external
+         H-function callback for independent verification.
 """
 
 from dataclasses import dataclass, field
@@ -151,14 +168,25 @@ class HallucinationGate:
 
         This is NOT semantic search. It's deterministic key lookup.
         """
+        # Support both {"facts": {...}} and {"anchors": {...}} formats
+        facts = self._anchors.get("facts") or self._anchors.get("anchors") or {}
         output_str = str(output).lower() if isinstance(output, str) else json.dumps(output)
         violated = []
-        for anchor_key, anchor_rules in self._anchors.get("facts", {}).items():
-            if anchor_key.lower() in (context or {}).get("user_message", "").lower():
+        user_msg = (context or {}).get("user_message", "").lower()
+        for anchor_key, anchor_rules in facts.items():
+            # Match if ALL words in the anchor key appear in user message
+            # e.g., "knee_pain" → ["knee", "pain"] → both must be in user_msg
+            key_words = anchor_key.lower().replace('_', ' ').split()
+            if key_words and all(word in user_msg for word in key_words):
                 if isinstance(anchor_rules, dict):
-                    forbidden = anchor_rules.get("forbidden_suggestions", [])
+                    # Support nested {"value": {"forbidden_suggestions": [...]}} format
+                    inner = anchor_rules.get("value") or anchor_rules
+                    forbidden = inner.get("forbidden_suggestions", []) if isinstance(inner, dict) else []
                     for term in forbidden:
-                        if term.lower() in output_str:
+                        # Substring match with plural tolerance: "leg_press" matches "leg presses"
+                        term_clean = term.lower().replace('_', ' ')
+                        out_lower = output_str.lower()
+                        if term_clean in out_lower or term_clean.rstrip('s') in out_lower:
                             violated.append(f"{anchor_key}→{term}")
 
         if violated:
@@ -179,8 +207,11 @@ class HallucinationGate:
             if rule.get("type") == "pattern_match":
                 pattern = rule.get("pattern", "")
                 output_str = str(output) if isinstance(output, str) else json.dumps(output)
-                if pattern and pattern.lower() in output_str.lower():
-                    return HResult(
+                # Match pattern terms as substrings (handle both "back_pain" and "back pain")
+                if pattern:
+                    pattern_terms = pattern.lower().replace('_', ' ').split('|')
+                    if any(term in output_str.lower() for term in pattern_terms):
+                        return HResult(
                         passed=False,
                         gate_result=GateResult.FAIL,
                         reason=rule.get("reason", f"Rule violation: {rule_key}"),

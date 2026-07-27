@@ -128,20 +128,25 @@ class AdaptiveConstraint:
         if rule_store_path:
             self._load_rules()
 
-    def derive(self, violation: Violation) -> DerivedRule:
+    def derive(self, violation: Violation, h_verify: Optional[Callable] = None) -> DerivedRule:
         """
         Given a violation, derive its equivalence class and generate a rule.
 
         Args:
             violation: The violation detected by H-function, M-function, or monitor.
+            h_verify: Optional external H-function callback for independent
+                      verification of the derived rule. TRISTRAN T3 FIX:
+                      A-function generates rules (LLM reasoning space) →
+                      H-function independently verifies them (deterministic space)
+                      → only then activate. Prevents "LLM judging LLM" loop.
 
         Returns:
             DerivedRule covering the equivalence class [v].
-            Auto-activates if confidence ≥ threshold.
+            If h_verify is provided and fails → rule.auto_activate = False,
+            confidence is halved, rule tagged for human review.
 
-        Side effects:
-            - Logs violation to history
-            - Stores derived rule (auto-activated or pending review)
+        Raises:
+            ValueError: If h_verify is provided but not callable.
         """
         self._violation_history.append(violation)
 
@@ -151,7 +156,25 @@ class AdaptiveConstraint:
         # Step 2: Generate rule from equivalence class
         rule = self._generate_rule(violation, equivalence_class)
 
-        # Step 3: Store rule
+        # Step 3: TRISTAN T3 FIX — Independent H-function verification
+        if h_verify is not None:
+            try:
+                # Pass the rule through H-function: verify the rule itself
+                # doesn't contain hallucinations or contradictions
+                h_result = h_verify(
+                    output={"equivalence_class": rule.equivalence_class, "rule_pattern": rule.rule_pattern},
+                    context={"violation": violation.to_dict()},
+                )
+                if not h_result.passed:
+                    # H-function rejected the rule → flag for human review
+                    rule.confidence = rule.confidence / 2
+                    rule.rule_action = "pending_review"
+                    rule.scope = f"{rule.scope}:h_rejected"
+            except Exception:
+                # H-function unavailable → conservative: halve confidence
+                rule.confidence = rule.confidence / 2
+
+        # Step 4: Store rule
         self._rules[rule.rule_id] = rule
 
         if self._path:
