@@ -34,7 +34,7 @@ class Event:
     event_type: str  # "decision" | "question" | "answer" | "report" | "veto" | ...
     subject: str
     summary: str
-    content_hash: str  # SHA256 of the original message/decision content
+    content_hash: Optional[str] = None  # SHA256 of the original message/decision content; auto-computed in record() if empty
     parent_events: List[str] = field(default_factory=list)
     child_events: List[str] = field(default_factory=list)
     anchor_keys: List[str] = field(default_factory=list)
