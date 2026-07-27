@@ -1,0 +1,42 @@
+{
+  "description": "Example anchor facts for a physical retail business.",
+  "version": "0.1.0",
+  "anchors": {
+    "zwf.store_count": {
+      "value": 1,
+      "source": "founder",
+      "ttl": 0,
+      "description": "ZWISERFIT operates exactly one physical store."
+    },
+    "zwf.store_location": {
+      "value": "Dongguan, Guangdong, China",
+      "source": "store_registry",
+      "ttl": 0,
+      "description": "Store is located in Dongguan, Guangdong."
+    },
+    "zwf.store_opened": {
+      "value": "2019-03-01",
+      "source": "business_license",
+      "ttl": 0,
+      "description": "Store opening date."
+    },
+    "zwf.store_members": {
+      "value": 118,
+      "source": "store_db",
+      "ttl": 86400,
+      "description": "Active member count. Updated daily from store system."
+    },
+    "zwf.data_capture_rate": {
+      "value": 1.0,
+      "source": "sensor_audit",
+      "ttl": 604800,
+      "description": "100% behavior data capture rate over 7 years."
+    },
+    "a16z.big_ideas_2026_tracker": {
+      "value": "rejected",
+      "source": "public_announcement_2025-10",
+      "ttl": 0,
+      "description": "a16z Big Ideas in Tech 2026 application status is final."
+    }
+  }
+}
