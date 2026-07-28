@@ -91,6 +91,7 @@ class ContextRebuilder:
         """
         self.session_id = session_id
         self._events: List[Event] = []
+        self._event_index: Dict[str, int] = {}  # P0 FIX (Tristan audit): O(1) lookup replacing O(n) _find_event
         self._path = event_store_path
         self._dirty = False
 
@@ -113,6 +114,7 @@ class ContextRebuilder:
                 parent.child_events.append(event.event_id)
 
         self._events.append(event)
+        self._event_index[event.event_id] = len(self._events) - 1  # P0 FIX: O(1) index
         self._dirty = True
         self._persist()
 
@@ -207,6 +209,14 @@ class ContextRebuilder:
         return [e.to_dict() for e in self._events]
 
     def _find_event(self, event_id: str) -> Optional[Event]:
+        # P0 FIX (Tristan audit 2026-07-28): O(1) dict lookup replacing O(n) linear scan.
+        # With 100K+ events, the old O(n) would be catastrophic on every reconstruct().
+        idx = self._event_index.get(event_id)
+        if idx is not None and idx < len(self._events):
+            event = self._events[idx]
+            if event.event_id == event_id:  # sanity check: index might be stale
+                return event
+        # Fallback: linear scan for stale index
         for e in self._events:
             if e.event_id == event_id:
                 return e

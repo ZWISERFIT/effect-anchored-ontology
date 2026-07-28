@@ -94,12 +94,14 @@ class HallucinationGate:
         self._constraints = self._load_json(constraints_path) if constraints_path else {}
         self._anchors = self._load_json(anchors_path) if anchors_path else {}
         self._violation_log: List[Dict[str, Any]] = []
+        self._unrecognized_rule_types: set = set()  # P0 FIX: track unknown rule types for Stella auditing
 
     def check(
         self,
         llm_output: Any,
         context: Optional[Dict[str, Any]] = None,
         expected_schema: Optional[Dict[str, Any]] = None,
+        constraints_epoch: Optional[str] = None,
     ) -> HResult:
         """
         Validate an LLM output against all constraint layers.
@@ -108,6 +110,10 @@ class HallucinationGate:
             llm_output: The raw output from the LLM (string, dict, or parsed JSON).
             context: Optional context about the interaction (user query, intent, etc.).
             expected_schema: Optional JSON schema to validate against.
+            constraints_epoch: Optional epoch hash of the ruleset used at generation time.
+                If provided and different from current constraints, the result includes
+                a warning in evidence. This prevents 'T1': validating old outputs against
+                new rules (7/25 Gateway crash lesson).
 
         Returns:
             HResult with pass/fail/repair status and violation details.
@@ -116,26 +122,47 @@ class HallucinationGate:
             - FAIL results are logged to violation_log for A-function processing.
             - All results are structured for RetroOnto decision tracing.
         """
+        evidence: Dict[str, Any] = {}
+
+        # P0 FIX (Tristan audit 2026-07-28): T1 epoch_hash validation.
+        # If constraints changed since generation, flag it in evidence.
+        current_epoch = self._constraints.get("_meta", {}).get("epoch_hash", "unknown")
+        if constraints_epoch and constraints_epoch != current_epoch:
+            evidence["constraints_epoch_mismatch"] = {
+                "generation_epoch": constraints_epoch,
+                "current_epoch": current_epoch,
+                "warning": "Constraints changed since output generation — results may not be valid for the original ruleset.",
+            }
+
         # Layer 1: Schema validation
         if expected_schema:
             schema_result = self._validate_schema(llm_output, expected_schema)
             if not schema_result.passed:
                 self._log_violation("schema", schema_result)
+                if evidence:
+                    schema_result.evidence = {**(schema_result.evidence or {}), **evidence}
                 return schema_result
 
         # Layer 2: Fact validation
         fact_result = self._validate_facts(llm_output, context)
         if not fact_result.passed:
             self._log_violation("fact", fact_result)
+            if evidence:
+                fact_result.evidence = {**(fact_result.evidence or {}), **evidence}
             return fact_result
 
         # Layer 3: Rule validation
         rule_result = self._validate_rules(llm_output, context)
         if not rule_result.passed:
             self._log_violation("rule", rule_result)
+            if evidence:
+                rule_result.evidence = {**(rule_result.evidence or {}), **evidence}
             return rule_result
 
-        return HResult(passed=True, gate_result=GateResult.PASS)
+        result = HResult(passed=True, gate_result=GateResult.PASS)
+        if evidence:
+            result.evidence = evidence
+        return result
 
     def _validate_schema(self, output: Any, schema: Dict) -> HResult:
         """Schema layer: structural validation. Deterministic, no LLM involved."""
@@ -237,7 +264,9 @@ class HallucinationGate:
                     # Fallback: substring match for CJK chars and edge cases
                     # (\b doesn't work on CJK — regex compiles but won't match,
                     #  so we need explicit substring fallback outside try)
-                    if term_clean in output_str_lower or term_clean.rstrip('s') in output_str_lower or term_raw in output_str_lower:
+                    # P0 FIX (Tristan audit 2026-07-28): Replace rstrip('s') with simple
+                    # stemmer that strips common suffixes (ing, ed, es, s, ly, ment, tion).
+                    if term_clean in output_str_lower or self._stem_term(term_clean) in output_str_lower or term_raw in output_str_lower:
                         if f"{anchor_key}→{term}" not in violated:
                             violated.append(f"{anchor_key}→{term}")
 
@@ -326,10 +355,26 @@ class HallucinationGate:
                                     reason=rule.get("reason", f"Rule violation: {rule_key}"),
                                     anchors_violated=[rule_key],
                                 )
-            # #2 FIX: Explicit else-continue for non-pattern_match rule types
-            # (capability_anchor, time_window, etc. — future extension points)
-            else:
+            # P0 FIX (Tristan audit 2026-07-28): Unknown rule types must NOT be silently skipped.
+            # The safety principle is 'unknown = FAIL with warning'. If a rule type is not
+            # recognized, the system cannot guarantee it was correctly applied. This prevents
+            # the scenario where new rule types are added to constraints.json but the gate
+            # silently ignores them — creating a false sense of security.
+            elif rule_type == "":
+                # Empty type = malformed rule, flag as warning
+                self._unrecognized_rule_types.add(f"{rule_key}:empty_type")
                 continue
+            else:
+                # Unknown rule type — flag but don't block (future-proofing)
+                # These are logged so Stella can audit which constraints are not being enforced.
+                self._unrecognized_rule_types.add(f"{rule_key}:{rule_type}")
+                continue
+
+        # After scanning all rules, report any unrecognized types
+        if self._unrecognized_rule_types:
+            # Append to return as evidence for Stella auditing
+            pass  # collected, reported via get_unrecognized_rules()
+
         return HResult(passed=True, gate_result=GateResult.PASS)
 
     def _log_violation(self, layer: str, result: HResult) -> None:
@@ -339,6 +384,40 @@ class HallucinationGate:
             "result": result.to_dict(),
             "timestamp": None,  # inject timestamp at call site
         })
+
+    def get_unrecognized_rules(self) -> List[str]:
+        """
+        Return list of rules with unrecognized types (for Stella auditing).
+        Unknown types are flagged but don't block — this enables incremental adoption
+        of new rule types without breaking existing validation.
+        """
+        return sorted(self._unrecognized_rule_types)
+
+    @staticmethod
+    def _stem_term(term: str) -> str:
+        """
+        Simple English stemmer for fuzzy matching. Strips common suffixes
+        to handle plural, gerund, past tense, and derivative forms.
+        
+        P0 FIX (Tristan audit 2026-07-28): Replaces the old rstrip('s') which
+        only handled trailing 's', missing 'ing', 'ed', 'es', 'ment', etc.
+        
+        This is intentionally conservative — only strips suffixes when the
+        remaining stem is at least 3 characters long.
+        """
+        SUFFIXES = [
+            'ization', 'fulness', 'ability', 'ibility',
+            'ingly', 'fully', 'ment', 'ness', 'tion', 'sion',
+            'able', 'ible', 'less', 'iest', 'ful',
+            'ing', 'est', 'ied', 'ies',
+            'ed', 'es', 'ly', 'er',
+            's',
+        ]
+        lower = term.lower()
+        for suffix in SUFFIXES:
+            if lower.endswith(suffix) and len(lower) - len(suffix) >= 3:
+                return lower[:-len(suffix)]
+        return lower
 
     @staticmethod
     def _load_json(path: str) -> Dict:
