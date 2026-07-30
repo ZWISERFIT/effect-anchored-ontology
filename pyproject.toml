@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "effect-anchored-ontology"
+name = "lineage-anchored-ontology"
 version = "0.1.0-alpha"
-description = "Six deterministic libraries that operate outside the LLM's reasoning space"
+description = "AI Ontology Infrastructure: Experience Compounding Engine — six deterministic libraries operating outside the LLM's reasoning space"
 readme = "README.md"
 license = {text = "Apache-2.0"}
 requires-python = ">=3.9"
@@ -30,8 +30,8 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ZWISERFIT/effect-anchored-ontology"
-Repository = "https://github.com/ZWISERFIT/effect-anchored-ontology"
+Homepage = "https://github.com/ZWISERFIT/lineage-anchored-ontology"
+Repository = "https://github.com/ZWISERFIT/lineage-anchored-ontology"
 Discussions = "https://github.com/ZWISERFIT/ZWISERFIT/discussions"
 
 [project.optional-dependencies]

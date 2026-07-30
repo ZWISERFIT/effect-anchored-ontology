@@ -121,7 +121,8 @@ class MemoryAnchor:
         Returns the content_hash.
         """
         serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
-        content_hash = hashlib.sha256(serialized.encode()).hexdigest()[:16]
+        # v0.1.1: Use full 64-char SHA-256 for attestation-grade integrity (Ethan audit 2026-07-28)
+        content_hash = hashlib.sha256(serialized.encode()).hexdigest()
 
         from datetime import datetime, timezone as _tz
         self._anchors[key] = {
@@ -146,7 +147,8 @@ class MemoryAnchor:
             return None
         current = self._anchors[key]
         serialized = json.dumps(current["value"], ensure_ascii=False, sort_keys=True)
-        recomputed = hashlib.sha256(serialized.encode()).hexdigest()[:16]
+        # v0.1.1: Full SHA-256 for verification, not truncated
+        recomputed = hashlib.sha256(serialized.encode()).hexdigest()
         # Anchors loaded from file may not have 'hash' key
         # If hash is missing, treat as unverified (can't check integrity)
         stored_hash = current.get("hash") or current.get("content_hash")

@@ -33,6 +33,10 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Optional
 import json
+import logging
+import sys
+
+logger = logging.getLogger(__name__)
 
 
 class GateResult(Enum):
@@ -50,6 +54,7 @@ class HResult:
     anchors_violated: List[str] = field(default_factory=list)
     repair_applied: Optional[str] = None  # description of external fix
     evidence: Optional[Dict[str, Any]] = None  # for RetroOnto decision tracing
+    confidence: float = 1.0  # 1.0=完全确定, 0.0=完全不确定; FAIL时降低
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -59,6 +64,7 @@ class HResult:
             "anchors_violated": self.anchors_violated,
             "repair_applied": self.repair_applied,
             "evidence": self.evidence,
+            "confidence": self.confidence,
         }
 
 
@@ -165,20 +171,25 @@ class HallucinationGate:
         return result
 
     def _validate_schema(self, output: Any, schema: Dict) -> HResult:
-        """Schema layer: structural validation. Deterministic, no LLM involved."""
-        # In MVP: jsonschema.validate() or equivalent
-        # For now: interface definition
+        """
+        Schema layer: structural validation. Deterministic, no LLM involved.
+
+        Confidence model:
+            PASS → 1.0
+            FAIL → 0.99 (schema checks are binary — extremely high confidence)
+        """
         try:
             if isinstance(output, str):
                 output = json.loads(output)
             # jsonschema.validate(output, schema)  # MVP implementation
-            return HResult(passed=True, gate_result=GateResult.PASS)
+            return HResult(passed=True, gate_result=GateResult.PASS, confidence=1.0)
         except Exception as e:
             return HResult(
                 passed=False,
                 gate_result=GateResult.FAIL,
                 reason=f"Schema validation failed: {str(e)}",
                 evidence={"output_preview": str(output)[:200]},
+                confidence=0.99,
             )
 
     def _validate_facts(
@@ -205,6 +216,11 @@ class HallucinationGate:
         in user_message AND scan LLM output for forbidden suggestions.
         Previously only scanned user_message for anchor match, missing cases
         where the LLM output itself contains the trigger (e.g., medical terms).
+
+        Confidence model:
+            PASS → 1.0
+            FAIL → max(0.95, min(0.99, 0.95 + 0.01 * violated_anchors_count))
+                   More violated anchors → higher confidence this is a real fail.
         """
         # Support both {"facts": {...}} and {"anchors": {...}} formats
         facts = self._anchors.get("facts") or self._anchors.get("anchors") or {}
@@ -271,14 +287,18 @@ class HallucinationGate:
                             violated.append(f"{anchor_key}→{term}")
 
         if violated:
+            # Confidence scales with number of violated anchors:
+            # 1 violation → 0.96, 2 → 0.97, ..., capped at 0.99
+            fact_confidence = min(0.99, 0.95 + 0.01 * len(violated))
             return HResult(
                 passed=False,
                 gate_result=GateResult.FAIL,
                 reason="Fact anchors violated",
                 anchors_violated=violated,
                 evidence={"matched_anchors": violated},
+                confidence=fact_confidence,
             )
-        return HResult(passed=True, gate_result=GateResult.PASS)
+        return HResult(passed=True, gate_result=GateResult.PASS, confidence=1.0)
 
     def _validate_rules(
         self, output: Any, context: Optional[Dict] = None
@@ -293,6 +313,10 @@ class HallucinationGate:
         P1#7 FIX (Zeus audit): Dual-end scanning — scan both user_message (context)
         AND LLM output for rule patterns. Previously only scanned output_str, missing
         cases where the user_message contains the trigger (e.g., medical terms).
+
+        Confidence model:
+            PASS → 1.0
+            FAIL → 0.90 (pattern matching is binary but may have false matches)
         """
         import re as _re
         output_str = str(output) if isinstance(output, str) else json.dumps(output)
@@ -327,6 +351,7 @@ class HallucinationGate:
                                     gate_result=GateResult.FAIL,
                                     reason=rule.get("reason", f"Rule violation: {rule_key}"),
                                     anchors_violated=[rule_key],
+                                    confidence=0.90,
                                 )
                             # Form 2: raw (preserves underscores — direct substring)
                             if term_raw != term_clean and _re.escape(term_raw) in combined_lower:
@@ -335,6 +360,7 @@ class HallucinationGate:
                                     gate_result=GateResult.FAIL,
                                     reason=rule.get("reason", f"Rule violation: {rule_key}"),
                                     anchors_violated=[rule_key],
+                                    confidence=0.90,
                                 )
                             # Fallback: substring match for CJK and edge cases
                             # (\b doesn't work on CJK characters — regex compiles but
@@ -345,6 +371,7 @@ class HallucinationGate:
                                     gate_result=GateResult.FAIL,
                                     reason=rule.get("reason", f"Rule violation: {rule_key}"),
                                     anchors_violated=[rule_key],
+                                    confidence=0.90,
                                 )
                         except _re.error:
                             # Regex compilation failed — pure substring fallback
@@ -354,6 +381,7 @@ class HallucinationGate:
                                     gate_result=GateResult.FAIL,
                                     reason=rule.get("reason", f"Rule violation: {rule_key}"),
                                     anchors_violated=[rule_key],
+                                    confidence=0.90,
                                 )
             # P0 FIX (Tristan audit 2026-07-28): Unknown rule types must NOT be silently skipped.
             # The safety principle is 'unknown = FAIL with warning'. If a rule type is not
@@ -375,7 +403,7 @@ class HallucinationGate:
             # Append to return as evidence for Stella auditing
             pass  # collected, reported via get_unrecognized_rules()
 
-        return HResult(passed=True, gate_result=GateResult.PASS)
+        return HResult(passed=True, gate_result=GateResult.PASS, confidence=1.0)
 
     def _log_violation(self, layer: str, result: HResult) -> None:
         """Log violation for A-function processing and RetroOnto tracing."""
@@ -424,3 +452,151 @@ class HallucinationGate:
         """Load JSON constraint/anchor file. Deterministic file I/O."""
         with open(path, "r") as f:
             return json.load(f)
+
+    def emit_intercept_event(self, h_result: HResult, source_agent: str = "Tristan",
+                             claimed: str = "", expected: str = "", actual: str = "",
+                             category: str = "infrastructure") -> "HInterceptEvent":
+        """
+        High-level API: 从拦截结果创建并推送经验萃取事件到 Engine。
+        应在check()返回FAIL后调用。
+        """
+        event = HInterceptEvent.from_h_result(h_result, source_agent, claimed, expected, actual, category)
+
+        # 尝试推送到 Dynamic Engine
+        engine_dir = "/home/agentuser/.openclaw/workspace/tristan/tech_lead/retroonto/engine"
+        sys.path.insert(0, engine_dir)
+        try:
+            from experience_extractor import ExperienceExtractor
+            extractor = ExperienceExtractor()
+            result = extractor.extract(event.to_dict())
+            if result.need_permanentization:
+                from constraint_generator import ConstraintGenerator
+                from rule_registry import RuleRegistry
+                gen = ConstraintGenerator()
+                registry = RuleRegistry()
+                # ErrorPattern is a dataclass; convert to dict for engine API
+                ep_dict = {
+                    "pattern_id": result.pattern_id,
+                    "pattern_fingerprint": result.pattern_fingerprint,
+                    "error_signature": result.error_signature,
+                    "claimed": result.claimed,
+                    "expected": result.expected,
+                    "actual": result.actual,
+                    "severity": result.severity,
+                    "category": result.category,
+                    "constraint_text": result.constraint_text,
+                    "gap_analysis": result.gap_analysis,
+                    "source_agent": result.source_agent,
+                }
+                constraint_path, constraint_id = gen.generate_and_write(ep_dict)
+                if constraint_path:
+                    registry.register(
+                        rule_id=f"RULE-{constraint_id}",
+                        fingerprint=result.pattern_fingerprint,
+                        constraint_file=str(constraint_path),
+                        constraint_id=constraint_id,
+                        error_source_id=result.pattern_id,
+                        severity=result.severity,
+                        category=result.category,
+                        description=result.constraint_text,
+                    )
+        except ImportError:
+            logger.debug("Dynamic Engine not yet deployed — H intercept event not pushed")
+        except Exception as e:
+            logger.warning(f"Engine push failed (non-blocking): {e}")
+
+        return event
+
+
+@dataclass
+class HInterceptEvent:
+    """Protocol: H拦截事件 → 推送至Dynamic Engine做经验萃取
+    
+    Fields designed per Zeus施工菜单#4:
+    - context_id: 唯一上下文标识，用于关联同一错误多次发生
+    - source_agent: 触发拦截的Agent
+    - claimed: Agent声称的状态
+    - expected: 应该达到的状态
+    - actual: 实际验证的状态
+    """
+    event_type: str = "H_intercept"
+    source_agent: str = "Tristan"
+    context_id: str = ""
+    error_signature: str = ""        # 错误特征指纹
+    claimed: str = ""                 # Agent声称/声明
+    expected: str = ""                # 预期状态
+    actual: str = ""                  # 实际验证状态
+    constraint_text: str = ""         # 违反的约束文本
+    severity: str = "🔴"
+    category: str = "infrastructure"  # infrastructure|coordination|cognitive
+    timestamp: str = ""
+
+    def __post_init__(self):
+        if not self.timestamp:
+            from datetime import datetime, timezone, timedelta
+            # Use UTC+8 (Asia/Shanghai)
+            try:
+                tz = timezone(timedelta(hours=8))
+                self.timestamp = datetime.now(tz).isoformat()
+            except (TypeError, ValueError):
+                self.timestamp = datetime.now().isoformat()
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "event_type": self.event_type,
+            "source_agent": self.source_agent,
+            "context_id": self.context_id,
+            "error_signature": self.error_signature,
+            "claimed": self.claimed,
+            "expected": self.expected,
+            "actual": self.actual,
+            "constraint_text": self.constraint_text,
+            "severity": self.severity,
+            "category": self.category,
+            "timestamp": self.timestamp,
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), ensure_ascii=False)
+
+    @classmethod
+    def from_h_result(cls, h_result: HResult, source_agent: str = "Tristan",
+                      claimed: str = "", expected: str = "", actual: str = "",
+                      category: str = "infrastructure") -> "HInterceptEvent":
+        """
+        从 HResult 创建一个 HInterceptEvent。
+        
+        Args:
+            h_result: H拦截结果
+            source_agent: 触发拦截的Agent名
+            claimed: Agent声称的状态
+            expected: 应该达到的状态
+            actual: 实际验证的状态
+            category: 错误类别 (infrastructure|coordination|cognitive)
+        """
+        # Build error signature from violated anchors
+        signature_parts = []
+        if h_result.anchors_violated:
+            signature_parts.extend(h_result.anchors_violated)
+        if h_result.reason:
+            signature_parts.append(h_result.reason[:80])
+        error_signature = "|".join(signature_parts) if signature_parts else "unknown"
+
+        # Build constraint text from evidence
+        constraint_text = h_result.reason or ""
+        if h_result.evidence:
+            try:
+                constraint_text += " " + json.dumps(h_result.evidence, ensure_ascii=False)
+            except (TypeError, ValueError):
+                constraint_text += " " + str(h_result.evidence)
+
+        return cls(
+            source_agent=source_agent,
+            error_signature=error_signature,
+            claimed=claimed,
+            expected=expected,
+            actual=actual,
+            constraint_text=constraint_text,
+            category=category,
+            severity="🔴",
+        )

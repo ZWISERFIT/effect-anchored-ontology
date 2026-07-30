@@ -27,6 +27,10 @@ from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Callable
 import json
 import hashlib
+import logging
+import sys
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -139,6 +143,10 @@ class AdaptiveConstraint:
                       A-function generates rules (LLM reasoning space) →
                       H-function independently verifies them (deterministic space)
                       → only then activate. Prevents "LLM judging LLM" loop.
+                      
+                      Accepts TWO calling conventions (auto-detected):
+                      1. HResult verify(llm_output, context) — native H.gate.check signature
+                      2. HResult verify(output, context) — direct named-param call
 
         Returns:
             DerivedRule covering the equivalence class [v].
@@ -158,13 +166,38 @@ class AdaptiveConstraint:
 
         # Step 3: TRISTAN T3 FIX — Independent H-function verification
         if h_verify is not None:
+            h_verify_output = {
+                "equivalence_class": rule.equivalence_class,
+                "rule_pattern": rule.rule_pattern,
+            }
+            h_verify_context = {"violation": violation.to_dict()}
             try:
-                # Pass the rule through H-function: verify the rule itself
-                # doesn't contain hallucinations or contradictions
-                h_result = h_verify(
-                    output={"equivalence_class": rule.equivalence_class, "rule_pattern": rule.rule_pattern},
-                    context={"violation": violation.to_dict()},
-                )
+                # Auto-detect calling convention: try both (output, context)
+                # and (llm_output, context) to support both H.gate.check
+                # and custom callbacks
+                import inspect as _inspect
+                try:
+                    _sig = _inspect.signature(h_verify)
+                    _params = list(_sig.parameters.keys())
+                except (ValueError, TypeError):
+                    _params = []
+                # A-001 FIX: if first param is 'llm_output', use HallucinationGate.check convention
+                if _params and _params[0] == 'llm_output':
+                    h_result = h_verify(
+                        llm_output=h_verify_output,
+                        context=h_verify_context,
+                    )
+                elif _params and _params[0] == 'output':
+                    h_result = h_verify(
+                        output=h_verify_output,
+                        context=h_verify_context,
+                    )
+                else:
+                    # Fallback: try output= first (common wrapper convention)
+                    h_result = h_verify(
+                        output=h_verify_output,
+                        context=h_verify_context,
+                    )
                 if not h_result.passed:
                     # H-function rejected the rule → flag for human review
                     rule.confidence = rule.confidence / 2
@@ -362,3 +395,56 @@ Output ONLY the equivalence class description. Nothing else."""
             rules_list = [r.to_dict() for r in self._rules.values()]
             with open(self._path, "w") as f:
                 json.dump({"rules": rules_list}, f, ensure_ascii=False, indent=2)
+
+    def generate_code(self, error_pattern: Dict[str, Any]) -> Optional[str]:
+        """
+        A-function 新增方法：从错误模式→生成Python约束代码
+        
+        Per Zeus施工菜单#6: A函数从"推导规则"扩展到"生成代码"
+        
+        Args:
+            error_pattern: {
+                "pattern_id": str,
+                "pattern_fingerprint": str,
+                "error_signature": str,
+                "claimed": str,
+                "expected": str,
+                "actual": str,
+                "severity": str,
+                "category": str,
+                "constraint_text": str,
+            }
+        
+        Returns:
+            生成的约束代码文件路径，或None
+        """
+        engine_dir = "/home/agentuser/.openclaw/workspace/tristan/tech_lead/retroonto/engine"
+        sys.path.insert(0, engine_dir)
+        try:
+            from constraint_generator import ConstraintGenerator
+            from rule_registry import RuleRegistry
+
+            gen = ConstraintGenerator()
+            registry = RuleRegistry()
+
+            constraint_path, constraint_id = gen.generate_and_write(error_pattern)
+            if constraint_path:
+                registry.register(
+                    rule_id=f"RULE-{constraint_id}",
+                    fingerprint=error_pattern.get("pattern_fingerprint", ""),
+                    constraint_file=str(constraint_path),
+                    constraint_id=constraint_id,
+                    error_source_id=error_pattern.get("pattern_id", ""),
+                    severity=error_pattern.get("severity", "🔴"),
+                    category=error_pattern.get("category", "infrastructure"),
+                    description=error_pattern.get("constraint_text", ""),
+                )
+                logger.info(f"Generated constraint code at: {constraint_path}")
+                return str(constraint_path)
+        except ImportError:
+            # Engine not yet deployed — log and continue
+            logger.debug("Dynamic Engine not available for code generation")
+        except Exception as e:
+            logger.error(f"Code generation failed: {e}")
+
+        return None

@@ -225,7 +225,8 @@ class ContextRebuilder:
     def _hash_content(self, event: Event) -> str:
         """Create content hash from event's key identifying fields."""
         seed = f"{event.speaker}|{event.event_type}|{event.subject}|{event.summary}"
-        return hashlib.sha256(seed.encode()).hexdigest()[:16]
+        # v0.1.1: Full 64-char SHA-256 for cross-verification with M-function attestation
+        return hashlib.sha256(seed.encode()).hexdigest()
 
     def _persist(self) -> None:
         """Append event to JSON-lines file."""
