@@ -11,7 +11,8 @@ def test_routing():
     route = router.route("资本分析·估值建模")
     assert route.model in ("deepseek-v4-pro", "deepseek-reasoner")
     route2 = router.route("日报数据汇总")
-    assert route2.model in ("deepseek-flash", "qwen-plus")
+    assert route2.model in ("deepseek-flash", "qwen-plus", "qwen-flash")
+    # v2.0: ultra_light任务优先Qoder CN credit消费(qwen-flash)
     print("  ✅ test_routing PASSED")
 
 def test_h_gate():

@@ -1,8 +1,9 @@
 """
-ModelRouter — 模型路由与降级链路
-================================
+ModelRouter — 模型路由与降级链路 v2.0
+====================================
 
 根据任务分类结果选择最优模型，并构建降级链路。
+v2.0: Qoder CN/Intl双站接入 + Credit-aware路由
 """
 
 from dataclasses import dataclass
@@ -14,8 +15,10 @@ class RouteSelection:
 
     task: str
     model: str
+    provider: str  # "deepseek" | "qoder-cn" | "qoder-intl" | "qwen-dashscope"
     tier: str
     cost: str  # "$/M tokens"
+    credit_based: bool  # True = 用套餐Credit，不走DeepSeek余额
     fallback_chain: list
 
 
@@ -24,27 +27,66 @@ class ModelRouter:
 
     每个层级定义了优先级降序的候选模型池，
     主模型为 pool[0]，其余为降级链路。
+
+    路由策略：
+    - 代码生成/ultra_light → Qoder CN (Kimi-K2.7-Code/Qwen-Flash) → credit消费
+    - 轻量任务/light → Qoder CN (qwen-plus) → credit消费
+    - 中等/medium → DeepSeek v4 primary, Qoder为降级
+    - 重推理/heavy → DeepSeek v4-pro primary, Qoder为降级
+    - 深度推理/reasoning → DeepSeek reasoner, 无降级(Qoder无等价物)
     """
 
+    # Qoder CN 可用模型 (通过 openapi.qoder.com.cn)
+    QODER_CN_MODELS = {
+        "qwen-plus":   "$0.40/$1.20",   # 通义千问Plus
+        "qwen-max":    "$1.20/$4.80",    # 通义千问Max
+        "qwen-flash":  "$0.14/$0.28",    # 通义千问Flash
+        "kimi-code":   "$0.50/$2.00",    # Kimi-K2.7-Code
+        "glm-5":       "$0.60/$2.40",    # GLM-5.2
+        "minimax-m3":  "$0.50/$2.00",    # MiniMax-M3
+    }
+
+    # Qoder Intl 可用模型 (通过 openapi.qoder.sh)
+    QODER_INTL_MODELS = {
+        "qwen-plus":   "$0.40/$1.20",
+        "qwen-max":    "$1.20/$4.80",
+        "kimi-k3":     "$0.60/$2.50",
+        "kimi-code":   "$0.50/$2.00",
+    }
+
     MODEL_POOL = {
+        # ultra_light: 优先Qoder CN credit消费(免费)，降级DeepSeek
         "ultra_light": [
-            {"model": "deepseek-flash", "cost": "$0.14/$0.28"},
+            {"model": "qwen-flash", "provider": "qoder-cn", "credit": True,  "cost": "$0.14/$0.28"},
+            {"model": "deepseek-flash", "provider": "deepseek", "credit": False, "cost": "$0.14/$0.28"},
         ],
+        # light: Qoder CN qwen-plus(credit) → DeepSeek flash
         "light": [
-            {"model": "qwen-plus", "cost": "$0.40/$1.20"},
-            {"model": "deepseek-flash", "cost": "$0.14/$0.28"},
+            {"model": "qwen-plus", "provider": "qoder-cn", "credit": True,  "cost": "$0.40/$1.20"},
+            {"model": "deepseek-flash", "provider": "deepseek", "credit": False, "cost": "$0.14/$0.28"},
         ],
+        # medium: DeepSeek v4 primary, Qoder qwen-max为降级
         "medium": [
-            {"model": "deepseek-v4", "cost": "$1.10/$4.40"},
-            {"model": "qwen-plus", "cost": "$0.40/$1.20"},
+            {"model": "deepseek-v4", "provider": "deepseek", "credit": False, "cost": "$1.10/$4.40"},
+            {"model": "qwen-max", "provider": "qoder-cn", "credit": True,  "cost": "$1.20/$4.80"},
+            {"model": "qwen-plus", "provider": "qoder-cn", "credit": True,  "cost": "$0.40/$1.20"},
         ],
+        # heavy: DeepSeek v4-pro primary, Qoder qwen-max降级
         "heavy": [
-            {"model": "deepseek-v4-pro", "cost": "$2.20/$8.80"},
-            {"model": "deepseek-v4", "cost": "$1.10/$4.40"},
+            {"model": "deepseek-v4-pro", "provider": "deepseek", "credit": False, "cost": "$2.20/$8.80"},
+            {"model": "deepseek-v4", "provider": "deepseek", "credit": False, "cost": "$1.10/$4.40"},
+            {"model": "qwen-max", "provider": "qoder-cn", "credit": True,  "cost": "$1.20/$4.80"},
         ],
+        # reasoning: 仅DeepSeek——Qoder无reasoner等价物
         "reasoning": [
-            {"model": "deepseek-reasoner", "cost": "$0.55/$2.19"},
-            {"model": "deepseek-v4-pro", "cost": "$2.20/$8.80"},
+            {"model": "deepseek-reasoner", "provider": "deepseek", "credit": False, "cost": "$0.55/$2.19"},
+            {"model": "deepseek-v4-pro", "provider": "deepseek", "credit": False, "cost": "$2.20/$8.80"},
+        ],
+        # code: Qoder CN Kimi-Code primary(credit), DeepSeek flash降级
+        "code": [
+            {"model": "kimi-code", "provider": "qoder-cn", "credit": True,  "cost": "$0.50/$2.00"},
+            {"model": "qwen-plus", "provider": "qoder-cn", "credit": True,  "cost": "$0.40/$1.20"},
+            {"model": "deepseek-v4", "provider": "deepseek", "credit": False, "cost": "$1.10/$4.40"},
         ],
     }
 
@@ -53,7 +95,6 @@ class ModelRouter:
 
         Args:
             task_classifier: 可选的自定义分类器实例。
-                             默认使用 TaskClassifier。
         """
         from effect_anchored.routing.task_classifier import TaskClassifier
 
@@ -63,27 +104,116 @@ class ModelRouter:
         self,
         task: str,
         budget: float | None = None,
-        latency_preference: str | None = None,
+        credit_mode: str = "prefer",  # "prefer" | "force" | "avoid"
     ) -> RouteSelection:
         """根据任务文本路由到最优模型。
 
         Args:
             task: 任务描述文本。
             budget: 可选预算上限 ($USD)。
-            latency_preference: 可选延迟偏好 ("low" | "balanced" | "quality")。
+            credit_mode: Qoder credit使用策略。
+                - "prefer": 优先credit消费，深度推理类仍用DeepSeek
+                - "force": 全部走credit (除reasoning层)
+                - "avoid": 不走credit，全DeepSeek
 
         Returns:
-            RouteSelection 包含所选模型、层级、成本和降级链路。
+            RouteSelection 包含所选模型、provider、层级、成本和降级链路。
         """
         tier = self.classifier.classify(task)
+
+        # 代码生成类任务特殊处理
+        code_keywords = ["代码", "编程", "测试", "函数", "类", "API", "接口",
+                         "重构", "调试", "debug", "code", "function", "class",
+                         "python", "javascript", "写一个", "实现"]
+        if any(kw in task.lower() for kw in code_keywords):
+            tier = "code"
+
         pool = self.MODEL_POOL.get(tier, self.MODEL_POOL["medium"])
+
+        # credit_mode过滤
+        if credit_mode == "avoid":
+            pool = [e for e in pool if not e.get("credit", False)]
+            if not pool:
+                pool = self.MODEL_POOL[tier]
+        elif credit_mode == "force" and tier != "reasoning":
+            # 强制credit但reasoning层无credit可用
+            credit_pool = [e for e in pool if e.get("credit", False)]
+            if credit_pool:
+                pool = credit_pool
+
         primary = pool[0]
-        fallback_chain = [m["model"] for m in pool[1:]]
+        fallbacks = [f"{e['provider']}/{e['model']}" for e in pool[1:]]
 
         return RouteSelection(
             task=task,
             model=primary["model"],
+            provider=primary["provider"],
             tier=tier,
             cost=primary["cost"],
-            fallback_chain=fallback_chain,
+            credit_based=primary.get("credit", False),
+            fallback_chain=fallbacks,
+        )
+
+    def route_with_budget(
+        self,
+        task: str,
+        budget: float,
+        latency_preference: str | None = None,
+    ) -> RouteSelection:
+        """考虑预算约束的路由。
+
+        Args:
+            task: 任务描述。
+            budget: 预算上限 ($USD)。
+            latency_preference: 偏好 "low" | "balanced" | "quality"。
+
+        Returns:
+            RouteSelection，预算约束下最优选择。
+        """
+        # 预算极低 → 强制走ultra_light
+        if budget < 0.001:
+            pool = self.MODEL_POOL["ultra_light"]
+            primary = pool[0]
+            return RouteSelection(
+                task=task,
+                model=primary["model"],
+                provider=primary["provider"],
+                tier="ultra_light",
+                cost=primary["cost"],
+                credit_based=primary.get("credit", False),
+                fallback_chain=[],
+            )
+
+        # 预算低 → 强制走light层
+        if budget < 0.01:
+            pool = self.MODEL_POOL["light"]
+            primary = pool[0]
+            return RouteSelection(
+                task=task,
+                model=primary["model"],
+                provider=primary["provider"],
+                tier="light",
+                cost=primary["cost"],
+                credit_based=primary.get("credit", False),
+                fallback_chain=[],
+            )
+
+        return self.route(task, budget=budget)
+
+    def explain_route(self, selection: RouteSelection) -> str:
+        """生成人类可读的路由解释。
+
+        Args:
+            selection: RouteSelection。
+
+        Returns:
+            路由决策解释字符串。
+        """
+        credit_note = "🟢 CREDIT消费" if selection.credit_based else "💰 DeepSeek余额"
+        return (
+            f"[{selection.tier}] {selection.task[:40]}... "
+            f"→ {selection.provider}/{selection.model} "
+            f"({selection.cost}) {credit_note}"
+            + (f" | fallback: {' > '.join(selection.fallback_chain)}"
+               if selection.fallback_chain else "")
         )
