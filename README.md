@@ -142,11 +142,13 @@ Apache 2.0
 
 ## 由ZWISERFIT 9-Agent Collective构建
 
-LAO是 **ZWISERFIT** 的第一个对外开源产品——面向线下实体门店的全栈AI自治平台。ZWISERFIT是9套垂直Agent微型OS构成的AI操作系统级公司。
+LAO是 **ZWISERFIT** 的第一个对外开源产品。LAO面向所有使用LLM的Agent开发者——任何有"幻觉"和"失忆"痛点的场景。
+
+ZWISERFIT本身是一家AI操作系统级公司——9套垂直Agent微型OS构成的全栈自治平台。LAO是这9-Agent系统内部打磨出的认知层基础设施，现在以独立开源产品对外发布。
 
 - **创始人：** 莫淑瑜 · 保险内行×健身布道者×产品架构师×AI系统创建者
 - **AI军团：** 9-Agent 24×7自主运行
-- **门店：** 东莞万江 · 7年深耕
+- **LAO起源：** 9-Agent在实战中遇到120天幻觉问题→提炼为通用确定性校验层
 
 **LLM让AI知道世界。LAO让AI知道你。**
 
